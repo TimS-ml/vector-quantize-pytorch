@@ -1,3 +1,19 @@
+"""
+Vector Quantization Implementation in PyTorch
+
+This module provides various vector quantization (VQ) implementations for neural networks,
+including standard VQ-VAE, EMA-based codebook updates, and advanced features like
+rotation trick, directional reparameterization, and cosine similarity-based quantization.
+
+Key Features:
+- EuclideanCodebook and CosineSimCodebook for different distance metrics
+- K-means initialization for codebook
+- Exponential Moving Average (EMA) updates for codebook maintenance
+- Multi-head quantization support
+- Distributed training support
+- Various gradient estimation techniques (straight-through, rotation trick, directional reparam)
+"""
+
 from __future__ import annotations
 
 from math import sqrt
@@ -17,34 +33,53 @@ from einops import rearrange, repeat, reduce, pack, unpack
 
 from typing import Callable
 
+# ===================================
+# Helper Functions
+# ===================================
+
 def exists(val):
+    """Check if a value is not None"""
     return val is not None
 
 def default(val, d):
+    """Return val if it exists, otherwise return default value d"""
     return val if exists(val) else d
 
 def noop(*args, **kwargs):
+    """No operation function - does nothing"""
     pass
 
 def identity(t):
+    """Identity function - returns input unchanged"""
     return t
 
 def at_most_one_of(*bools):
+    """Check that at most one of the boolean values is True"""
     return sum([*map(int, bools)]) <= 1
 
 def l2norm(t, dim = -1,  eps = 1e-6):
+    """L2 normalization along specified dimension with numerical stability"""
     return F.normalize(t, p = 2, dim = dim, eps = eps)
 
 def safe_div(num, den, eps = 1e-6):
+    """Safe division with clamping to avoid division by zero"""
     return num / den.clamp(min = eps)
 
 def append_dims_to(t, ndims):
+    """
+    Append singleton dimensions to tensor until it reaches ndims dimensions.
+    Useful for broadcasting operations.
+    """
     assert t.ndim <= ndims
     append_ndims = ndims - t.ndim
     shape = t.shape
     return t.reshape(*shape, *((1,) * append_ndims))
 
 def Sequential(*modules):
+    """
+    Create a Sequential module, filtering out None values.
+    Returns None if no modules, single module if one, or nn.Sequential if multiple.
+    """
     modules = [*filter(exists, modules)]
     if len(modules) == 0:
         return None
@@ -54,33 +89,61 @@ def Sequential(*modules):
     return nn.Sequential(*modules)
 
 def cdist(x, y, eps = 1e-8):
+    """
+    Compute pairwise Euclidean distances between vectors in x and y.
+    Uses the formula: ||x - y||^2 = ||x||^2 + ||y||^2 - 2*x^T*y
+    This is more numerically stable than computing norms directly.
+
+    Args:
+        x: tensor of shape (b, n, d)
+        y: tensor of shape (b, m, d)
+    Returns:
+        distances: tensor of shape (b, n, m)
+    """
     x2 = reduce(x ** 2, 'b n d -> b n', 'sum')
     y2 = reduce(y ** 2, 'b n d -> b n', 'sum')
     xy = einsum('b i d, b j d -> b i j', x, y) * -2
     return (rearrange(x2, 'b i -> b i 1') + rearrange(y2, 'b j -> b 1 j') + xy).clamp(min = eps).sqrt()
 
 def log(t, eps = 1e-20):
+    """Safe logarithm with clamping to avoid log(0)"""
     return torch.log(t.clamp(min = eps))
 
 def entropy(prob, eps = 1e-5):
+    """
+    Calculate Shannon entropy: H(p) = -sum(p * log(p))
+    Used for measuring codebook diversity.
+    """
     return (-prob * log(prob, eps = eps)).sum(dim = -1)
 
 def accum_grad_(t, grad):
+    """
+    Accumulate gradients in-place. If gradient already exists, add to it.
+    Otherwise, create new gradient.
+    """
     if exists(t.grad):
         t.grad.add_(grad)
     else:
         t.grad = grad.clone().detach()
 
 def ema_inplace(old, new, decay, weight = None):
+    """
+    Exponential Moving Average (EMA) update in-place.
+    Updates old values using: old = decay * old + (1 - decay) * new
+
+    Args:
+        old: tensor to be updated
+        new: new values to incorporate
+        decay: decay rate (typically 0.8-0.99)
+        weight: optional weighting for different positions
+    """
 
     # if old.grad is populated, add it to new and set it to None
-
     if exists(old.grad):
         new.add_(old.grad)
         old.grad = None
 
     # take care of custom weighting
-
     weight = default(weight, 1.)
 
     if is_tensor(weight):
@@ -111,6 +174,10 @@ def uniform_init(*shape):
     return t
 
 def gumbel_noise(t):
+    """
+    Generate Gumbel noise for stochastic sampling.
+    Gumbel(0,1) = -log(-log(U)) where U ~ Uniform(0,1)
+    """
     noise = torch.zeros_like(t).uniform_(0, 1)
     return -log(-log(noise))
 
@@ -122,16 +189,34 @@ def gumbel_sample(
     dim = -1,
     training = True
 ):
+    """
+    Gumbel-Softmax sampling for differentiable discrete sampling.
+
+    Args:
+        logits: unnormalized log probabilities
+        temperature: temperature for softmax (higher = more uniform, lower = more peaked)
+        stochastic: whether to add Gumbel noise for stochastic sampling
+        straight_through: whether to use straight-through estimator for gradients
+        dim: dimension to sample over
+        training: whether in training mode
+
+    Returns:
+        ind: sampled indices (hard assignment)
+        one_hot: one-hot encoding (soft if straight_through, hard otherwise)
+    """
     dtype, size = logits.dtype, logits.shape[dim]
 
+    # Add Gumbel noise for stochastic sampling during training
     if training and stochastic and temperature > 0:
         sampling_logits = (logits / temperature) + gumbel_noise(logits)
     else:
         sampling_logits = logits
 
+    # Hard assignment via argmax
     ind = sampling_logits.argmax(dim = dim)
     one_hot = F.one_hot(ind, size).type(dtype)
 
+    # Straight-through estimator: use hard assignment in forward, soft in backward
     if not straight_through or temperature <= 0. or not training:
         return ind, one_hot
 
@@ -234,32 +319,55 @@ def kmeans(
     sample_fn = batched_sample_vectors,
     all_reduce_fn = noop
 ):
+    """
+    K-means clustering algorithm for codebook initialization.
+
+    Args:
+        samples: input samples to cluster, shape (num_codebooks, num_samples, dim)
+        num_clusters: number of cluster centers (codebook size)
+        num_iters: number of k-means iterations
+        use_cosine_sim: whether to use cosine similarity instead of Euclidean distance
+        sample_fn: function to sample initial cluster centers
+        all_reduce_fn: function for distributed all-reduce (noop for single GPU)
+
+    Returns:
+        means: cluster centers, shape (num_codebooks, num_clusters, dim)
+        bins: number of samples assigned to each cluster
+    """
     num_codebooks, dim, dtype, device = samples.shape[0], samples.shape[-1], samples.dtype, samples.device
 
+    # Initialize cluster centers by sampling from input
     means = sample_fn(samples, num_clusters)
 
+    # K-means iterations
     for _ in range(num_iters):
+        # Calculate distances between samples and cluster centers
         if use_cosine_sim:
             dists = samples @ rearrange(means, 'h n d -> h d n')
         else:
             dists = -cdist(samples, means)
 
+        # Assign each sample to nearest cluster
         buckets = torch.argmax(dists, dim = -1)
         bins = batched_bincount(buckets, minlength = num_clusters)
         all_reduce_fn(bins)
 
+        # Handle empty clusters
         zero_mask = bins == 0
         bins_min_clamped = bins.masked_fill(zero_mask, 1)
 
+        # Compute new cluster centers as mean of assigned samples
         new_means = buckets.new_zeros(num_codebooks, num_clusters, dim, dtype = dtype)
 
         new_means.scatter_add_(1, repeat(buckets, 'h n -> h n d', d = dim), samples)
         new_means = new_means / rearrange(bins_min_clamped, '... -> ... 1')
         all_reduce_fn(new_means)
 
+        # Normalize for cosine similarity
         if use_cosine_sim:
             new_means = l2norm(new_means)
 
+        # Keep old means for empty clusters
         means = torch.where(
             rearrange(zero_mask, '... -> ... 1'),
             means,
@@ -268,16 +376,33 @@ def kmeans(
 
     return means, bins
 
-# straight through
+# ===================================
+# Gradient Estimation Techniques
+# ===================================
 
 def straight_through(src, tgt):
+    """
+    Straight-Through Estimator (STE):
+    Forward pass uses tgt, backward pass uses gradients from src.
+    This is the standard way to get gradients through discrete quantization.
+    """
     return src + (tgt - src).detach()
 
-# rotation trick related
+# Rotation Trick - alternative gradient estimator
+# Reference: https://arxiv.org/abs/2410.06424
 
 def efficient_rotation_trick_transform(u, q, e):
     """
-    4.2 in https://arxiv.org/abs/2410.06424
+    Efficient rotation trick transform for gradient estimation through VQ.
+    Implements equation 4.2 from https://arxiv.org/abs/2410.06424
+
+    The rotation trick provides better gradient flow than straight-through
+    by rotating the gradient vector instead of copying it.
+
+    Args:
+        u: normalized source vector
+        q: normalized target vector
+        e: original source vector
     """
     e = rearrange(e, 'b d -> b 1 d')
     w = l2norm(u + q, dim = 1).detach()
@@ -291,7 +416,15 @@ def efficient_rotation_trick_transform(u, q, e):
     return rearrange(out, '... 1 d -> ... d')
 
 def rotate_to(src, tgt):
-    # rotation trick STE (https://arxiv.org/abs/2410.06424) to get gradients through VQ layer.
+    """
+    Rotation trick STE (https://arxiv.org/abs/2410.06424).
+    Alternative to straight-through estimator for getting gradients through VQ layer.
+    Rotates gradient direction for better gradient flow.
+
+    Args:
+        src: source vectors (encoder output)
+        tgt: target vectors (quantized codes)
+    """
     src, inverse = pack_one(src, '* d')
     tgt, _ = pack_one(tgt, '* d')
 
@@ -308,13 +441,31 @@ def rotate_to(src, tgt):
 
     return inverse(rotated)
 
-# directional reparam related
-# figure 1. https://openreview.net/forum?id=KRVnpTbx7R
+# Directional Reparameterization
+# Reference: https://openreview.net/forum?id=KRVnpTbx7R
 
 def directional_reparam(src, tgt, noise_variance = 5e-3):
+    """
+    Directional reparameterization for gradient estimation.
+    Adds noise to the error direction while preserving magnitude.
+
+    Instead of straight copy, this method:
+    1. Computes error direction: tgt - src
+    2. Adds Gaussian noise to the direction
+    3. Normalizes to unit direction
+    4. Scales by original error magnitude
+
+    This provides stochastic gradient estimates that can improve training.
+
+    Args:
+        src: source vectors
+        tgt: target vectors
+        noise_variance: variance of directional noise
+    """
     error_dir = tgt - src
     error_dir_norm = error_dir.norm(dim = -1, keepdim = True)
 
+    # Add noise to the error direction
     noised_dir = error_dir + sqrt(noise_variance) * torch.randn_like(error_dir)
     unit_noised_dir = l2norm(noised_dir)
 
@@ -335,9 +486,48 @@ def orthogonal_loss_fn(t):
     cosine_sim = einsum('h i d, h j d -> h i j', normed_codes, normed_codes)
     return (cosine_sim ** 2).sum() / (h * n ** 2) - (1 / n)
 
-# distance types
+# ===================================
+# Codebook Classes
+# ===================================
 
 class EuclideanCodebook(Module):
+    """
+    Codebook using Euclidean distance for vector quantization.
+
+    This class maintains a learnable or EMA-updated codebook of vectors.
+    Input vectors are quantized by finding the nearest codebook entry
+    using Euclidean distance.
+
+    Features:
+    - K-means initialization for better initial codebook
+    - EMA updates for codebook maintenance (alternative to backprop)
+    - Dead code detection and replacement
+    - Distributed training support
+    - Optional affine parameter normalization
+    - Gumbel-softmax sampling for stochastic quantization
+
+    Args:
+        dim: dimension of codebook vectors
+        codebook_size: number of vectors in codebook
+        num_codebooks: number of separate codebooks (for multi-head quantization)
+        kmeans_init: whether to initialize codebook using k-means
+        kmeans_iters: number of k-means iterations for initialization
+        sync_kmeans: whether to synchronize k-means across GPUs
+        decay: EMA decay rate (0.8-0.99 typical)
+        eps: epsilon for numerical stability
+        threshold_ema_dead_code: threshold for detecting unused codes
+        reset_cluster_size: cluster size to reset dead codes to
+        use_ddp: whether to use distributed data parallel
+        learnable_codebook: whether codebook is learnable via backprop
+        gumbel_sample: sampling function for codebook selection
+        sample_codebook_temp: temperature for gumbel sampling
+        ema_update: whether to use EMA updates
+        manual_ema_update: whether EMA updates are manual
+        affine_param: whether to use affine parameter normalization
+        sync_affine_param: whether to synchronize affine params across GPUs
+        affine_param_batch_decay: decay rate for batch statistics
+        affine_param_codebook_decay: decay rate for codebook statistics
+    """
     def __init__(
         self,
         dim,
@@ -886,7 +1076,9 @@ class CosineSimCodebook(Module):
         dist = unpack_one(dist, 'h * d')
         return quantize, embed_ind, dist
 
-# main class
+# ===================================
+# Main Vector Quantization Module
+# ===================================
 
 LossBreakdown = namedtuple('LossBreakdown', [
     'commitment',
@@ -896,6 +1088,65 @@ LossBreakdown = namedtuple('LossBreakdown', [
 ])
 
 class VectorQuantize(Module):
+    """
+    Main Vector Quantization module for VQ-VAE and similar architectures.
+
+    This module quantizes continuous input vectors to discrete codebook entries.
+    It supports various training strategies, gradient estimation techniques,
+    and regularization methods.
+
+    Key Features:
+    - Multiple distance metrics (Euclidean, cosine similarity)
+    - Various gradient estimators (straight-through, rotation trick, directional reparam)
+    - Multi-head quantization support
+    - Commitment loss and auxiliary losses
+    - EMA-based or learnable codebook updates
+    - Dead code handling
+    - Distributed training support
+
+    Args:
+        dim: input dimension
+        codebook_size: number of codebook entries
+        codebook_dim: dimension of codebook vectors (default: same as dim)
+        heads: number of quantization heads for multi-head VQ
+        separate_codebook_per_head: whether each head has separate codebook
+        decay: EMA decay for codebook updates
+        eps: epsilon for numerical stability
+        freeze_codebook: whether to freeze codebook (no updates)
+        kmeans_init: use k-means for codebook initialization
+        kmeans_iters: number of k-means iterations
+        sync_kmeans: synchronize k-means across GPUs
+        use_cosine_sim: use cosine similarity instead of Euclidean distance
+        layernorm_after_project_in: apply LayerNorm after input projection
+        threshold_ema_dead_code: threshold for detecting dead codes
+        channel_last: whether input is channel-last format
+        accept_image_fmap: whether to accept image feature maps (B, C, H, W)
+        commitment_weight: weight for commitment loss
+        commitment_use_cross_entropy_loss: use cross-entropy for commitment loss
+        orthogonal_reg_weight: weight for orthogonal regularization of codebook
+        orthogonal_reg_active_codes_only: only regularize active codes
+        orthogonal_reg_max_codes: max number of codes for orthogonal regularization
+        codebook_diversity_loss_weight: weight for codebook diversity loss
+        codebook_diversity_temperature: temperature for diversity loss
+        stochastic_sample_codes: whether to sample codes stochastically
+        sample_codebook_temp: temperature for code sampling
+        straight_through: use straight-through estimator
+        rotation_trick: use rotation trick for gradient estimation (https://arxiv.org/abs/2410.06424)
+        directional_reparam: use directional reparameterization
+        directional_reparam_variance: variance for directional reparam noise
+        sync_codebook: synchronize codebook across GPUs
+        sync_affine_param: synchronize affine parameters across GPUs
+        ema_update: whether to use EMA updates
+        manual_ema_update: whether EMA updates are manual
+        learnable_codebook: whether codebook is learnable via backprop
+        in_place_codebook_optimizer: optimizer for learnable codebook
+        manual_in_place_optimizer_update: manual optimizer updates
+        affine_param: use affine parameter normalization
+        affine_param_batch_decay: decay for batch statistics
+        affine_param_codebook_decay: decay for codebook statistics
+        sync_update_v: control parameter for synchronous updates (https://minyoungg.github.io/vqtorch/)
+        return_zeros_for_masked_padding: return zeros for masked positions
+    """
     def __init__(
         self,
         dim,

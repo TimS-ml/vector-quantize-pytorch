@@ -1,3 +1,6 @@
+"""
+Tests for Latent Quantization - Validates DiVeQ functionality for disentangled representations.
+"""
 import pytest
 import torch
 

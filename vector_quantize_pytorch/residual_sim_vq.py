@@ -1,3 +1,10 @@
+"""
+Residual SimVQ - Applies simplified vector quantization in residual manner.
+
+This module implements residual vector quantization using SimVQ (Simplified Vector Quantization),
+progressively refining representations through hierarchical quantization layers.
+"""
+
 from __future__ import annotations
 
 import random

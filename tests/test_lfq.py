@@ -1,3 +1,6 @@
+"""
+Tests for Lookup-Free Quantization (LFQ) - Validates LFQ functionality and correctness.
+"""
 import torch
 import pytest
 from vector_quantize_pytorch import LFQ

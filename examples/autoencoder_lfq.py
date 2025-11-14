@@ -1,3 +1,10 @@
+"""
+Example: Autoencoder using LFQ (Lookup-Free Quantization).
+
+Demonstrates LFQ-based autoencoder on FashionMNIST dataset, using lookup-free quantization
+for efficient discrete representation learning.
+"""
+
 # FashionMnist VQ experiment with various settings.
 # From https://github.com/minyoungg/vqtorch/blob/main/examples/autoencoder.py
 

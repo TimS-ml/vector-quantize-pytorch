@@ -1,3 +1,10 @@
+"""
+Example: Autoencoder using FSQ (Finite Scalar Quantization).
+
+Demonstrates FSQ-based autoencoder on FashionMNIST dataset, using finite scalar quantization
+for discrete latent representation learning.
+"""
+
 # FashionMnist VQ experiment with various settings, using FSQ.
 # From https://github.com/minyoungg/vqtorch/blob/main/examples/autoencoder.py
 

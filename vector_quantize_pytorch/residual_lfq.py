@@ -1,3 +1,10 @@
+"""
+Residual LFQ - Applies lookup-free quantization in residual manner for hierarchical quantization.
+
+This module implements residual vector quantization using LFQ (Lookup-Free Quantization), which
+progressively refines representations by quantizing residuals across multiple layers.
+"""
+
 import random
 from math import ceil, log2
 from functools import partial, cache

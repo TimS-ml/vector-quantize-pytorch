@@ -19,18 +19,26 @@ from einops import rearrange, pack, unpack
 
 import random
 
-# helper functions
+# ===================================
+# Helper Functions
+# ===================================
 
 def exists(v):
+    """Check if a value is not None"""
     return v is not None
 
 def default(*args):
+    """Return first non-None argument"""
     for arg in args:
         if exists(arg):
             return arg
     return None
 
 def maybe(fn):
+    """
+    Decorator that makes a function return None if input is None,
+    otherwise applies the function normally.
+    """
     @wraps(fn)
     def inner(x, *args, **kwargs):
         if not exists(x):
@@ -39,26 +47,73 @@ def maybe(fn):
     return inner
 
 def pack_one(t, pattern):
+    """Pack a single tensor using einops pattern"""
     return pack([t], pattern)
 
 def unpack_one(t, ps, pattern):
+    """Unpack a single tensor using einops pattern"""
     return unpack(t, ps, pattern)[0]
 
-# tensor helpers
+# ===================================
+# Tensor Helpers with Straight-Through Estimators
+# ===================================
 
 def round_ste(z):
-    """ round with straight through gradients. """
+    """
+    Round with straight-through gradients.
+    Forward: rounds to nearest integer
+    Backward: passes gradients through unchanged
+    """
     zhat = z.round()
     return z + (zhat - z).detach()
 
 def floor_ste(z):
-    """ floor with straight through gradients. """
+    """
+    Floor with straight-through gradients.
+    Forward: rounds down to integer
+    Backward: passes gradients through unchanged
+    """
     zhat = z.floor()
     return z + (zhat - z).detach()
 
-# main class
+# ===================================
+# Finite Scalar Quantization (FSQ)
+# ===================================
 
 class FSQ(Module):
+    """
+    Finite Scalar Quantization (FSQ) from https://arxiv.org/abs/2309.15505
+
+    FSQ is a simpler alternative to VQ-VAE that quantizes each dimension independently
+    to a finite set of scalar values. Unlike LFQ which uses binary {-1, 1}, FSQ
+    allows different numbers of levels per dimension.
+
+    Key Features:
+    - No learned codebook (like LFQ)
+    - No auxiliary losses required (no entropy loss needed)
+    - Each dimension quantized independently to L levels
+    - Codebook size = product of all levels
+    - More flexible than LFQ (different levels per dimension)
+
+    Example:
+        levels = [8, 5, 5, 5] gives codebook size = 8 * 5 * 5 * 5 = 1000
+        First dimension: 8 quantization levels
+        Other dimensions: 5 quantization levels each
+
+    Args:
+        levels: list/tuple of integers specifying quantization levels per dimension
+        dim: input/output feature dimension (default: inferred from levels)
+        num_codebooks: number of codebooks for product quantization
+        keep_num_codebooks_dim: whether to keep codebook dimension in output
+        scale: optional scaling factor for codes
+        allowed_dtypes: dtypes that don't require casting for quantization
+        channel_first: whether input is channel-first format
+        projection_has_bias: whether projections have bias
+        return_indices: whether to return codebook indices
+        force_quantization_f32: force quantization step to float32
+        preserve_symmetry: use symmetry-preserving quantization (https://arxiv.org/abs/2411.19842)
+        noise_dropout: probability of adding noise during training (for regularization)
+    """
     def __init__(
         self,
         levels: list[int] | tuple[int, ...],

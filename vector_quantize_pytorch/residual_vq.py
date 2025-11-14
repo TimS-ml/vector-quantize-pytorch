@@ -1,3 +1,22 @@
+"""
+Residual Vector Quantization (RVQ)
+
+Residual VQ applies multiple VQ layers sequentially, where each layer quantizes
+the residual error from the previous layer. This approach allows for:
+- Higher effective codebook size with smaller individual codebooks
+- Better quality through hierarchical quantization
+- Flexible bitrate through variable number of quantization layers
+
+Example:
+    With 3 layers, each with codebook size 256:
+    - Effective codebook size: 256^3 = 16.7M codes
+    - Can represent complex distributions efficiently
+
+The module also includes:
+- GroupedResidualVQ: Groups of separate RVQ for higher capacity
+- Shared codebooks option for parameter efficiency
+"""
+
 from __future__ import annotations
 
 import random
@@ -16,7 +35,9 @@ from einops import rearrange, repeat, reduce, pack, unpack
 
 from einx import get_at
 
-# helper functions
+# ===================================
+# Helper Functions
+# ===================================
 
 def exists(val):
     return val is not None
