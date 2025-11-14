@@ -1,3 +1,10 @@
+"""
+Example: Basic autoencoder with VQ-VAE for image compression.
+
+Demonstrates a simple VQ-VAE implementation on FashionMNIST dataset using vector quantization
+for learning discrete latent representations.
+"""
+
 # FashionMnist VQ experiment with various settings.
 # From https://github.com/minyoungg/vqtorch/blob/main/examples/autoencoder.py
 

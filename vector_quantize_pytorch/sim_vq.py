@@ -1,3 +1,17 @@
+"""
+Simplified Vector Quantization (SimVQ)
+
+SimVQ uses an implicit neural codebook derived from a frozen random codebook
+through a learnable transformation. This approach simplifies training while
+maintaining quantization quality.
+
+Key idea:
+- Start with frozen random codebook
+- Learn a transformation (typically a neural network) that maps frozen codes to actual codes
+- Avoids complex codebook update mechanisms (EMA, k-means, etc.)
+- Works well with rotation trick for gradient flow
+"""
+
 from __future__ import annotations
 from typing import Callable
 
@@ -11,18 +25,27 @@ from einops import rearrange, pack, unpack
 
 from vector_quantize_pytorch.vector_quantize_pytorch import rotate_to
 
-# helper functions
+# ===================================
+# Helper Functions
+# ===================================
 
 def exists(v):
+    """Check if a value is not None"""
     return v is not None
 
 def identity(t):
+    """Identity function - returns input unchanged"""
     return t
 
 def default(v, d):
+    """Return v if it exists, otherwise return default value d"""
     return v if exists(v) else d
 
 def pack_one(t, pattern):
+    """
+    Pack a single tensor and return an inverse function to unpack.
+    This is useful for temporarily flattening tensors for processing.
+    """
     packed, packed_shape = pack([t], pattern)
 
     def inverse(out, inv_pattern = None):
@@ -32,9 +55,36 @@ def pack_one(t, pattern):
 
     return packed, inverse
 
-# class
+# ===================================
+# Simplified Vector Quantization
+# ===================================
 
 class SimVQ(Module):
+    """
+    Simplified Vector Quantization with implicit neural codebook.
+
+    Instead of learning the codebook directly, SimVQ:
+    1. Initializes a frozen random codebook
+    2. Learns a transformation (neural network) that maps frozen codes to actual codes
+    3. Uses the transformed codes for quantization
+
+    Benefits:
+    - Simpler training (no complex codebook updates)
+    - Can use powerful transformations (MLPs, etc.)
+    - Works well with rotation trick
+    - No dead code problem
+
+    Args:
+        dim: dimension of input/output vectors
+        codebook_size: number of codes in the codebook
+        codebook_transform: transformation applied to frozen codebook (default: Linear layer)
+        init_fn: initialization function for frozen codebook
+        channel_first: whether input is channel-first format
+        rotation_trick: use rotation trick for gradient estimation
+        input_to_quantize_commit_loss_weight: weight for input→quantize commit loss
+        commitment_weight: overall weight for commitment loss
+        frozen_codebook_dim: dimension of frozen codebook (default: same as dim)
+    """
     def __init__(
         self,
         dim,

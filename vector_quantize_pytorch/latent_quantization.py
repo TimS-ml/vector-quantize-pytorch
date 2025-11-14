@@ -1,7 +1,17 @@
 """
-Disentanglement via Latent Quantization
- - https://arxiv.org/abs/2305.18378
+Disentanglement via Latent Quantization (DiVeQ)
+Reference: https://arxiv.org/abs/2305.18378
 Code adapted from Jax version in https://github.com/kylehkhsu/latent_quantization
+
+This module implements latent quantization for learning disentangled representations.
+Unlike traditional VQ methods, it quantizes each dimension to multiple discrete levels
+and uses learnable quantization values instead of fixed bins.
+
+Key Features:
+- Per-dimension quantization with learnable values
+- Flexible number of levels per dimension
+- Commitment and quantization losses for stable training
+- Optional codebook optimization
 """
 
 from __future__ import annotations
@@ -14,14 +24,17 @@ from torch import Tensor, int32, nn
 from torch.nn import Module
 from torch.optim import Optimizer
 
-# helper functions
-
+# ===================================
+# Helper Functions
+# ===================================
 
 def pack_one(t, pattern):
+    """Pack a single tensor using einops pattern"""
     return pack([t], pattern)
 
 
 def unpack_one(t, ps, pattern):
+    """Unpack a single tensor using einops pattern"""
     return unpack(t, ps, pattern)[0]
 
 

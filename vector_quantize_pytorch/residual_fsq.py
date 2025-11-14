@@ -1,3 +1,10 @@
+"""
+Residual FSQ - Applies finite scalar quantization in residual manner for hierarchical quantization.
+
+This module implements residual vector quantization using FSQ (Finite Scalar Quantization), which
+progressively refines representations by quantizing residuals across multiple layers.
+"""
+
 import random
 from math import ceil
 from functools import partial

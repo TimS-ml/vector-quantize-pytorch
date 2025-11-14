@@ -1,3 +1,10 @@
+"""
+Random Projection Quantizer - Uses random projections for efficient quantization.
+
+This module implements random projection-based quantization as described in https://arxiv.org/abs/2202.01855,
+providing an efficient approach to vector quantization through dimensionality reduction.
+"""
+
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F

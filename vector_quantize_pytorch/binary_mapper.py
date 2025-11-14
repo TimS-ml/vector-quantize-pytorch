@@ -1,3 +1,10 @@
+"""
+Binary Mapper - Efficient binary mapping for vector quantization.
+
+This module provides a stable binary mapping approach for vector quantization, proposed as an
+alternative to traditional VAE methods (https://arxiv.org/abs/2510.17558).
+"""
+
 from __future__ import annotations
 
 # proposed in https://arxiv.org/abs/2510.17558 as a more stable alternative to VAE by François Fleuret

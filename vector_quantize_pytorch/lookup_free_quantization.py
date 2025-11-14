@@ -42,40 +42,71 @@ def maybe_distributed_mean(t):
     t = t / dist.get_world_size()
     return t
 
-# helper functions
+# ===================================
+# Helper Functions
+# ===================================
 
 def exists(v):
+    """Check if a value is not None"""
     return v is not None
 
 def identity(t):
+    """Identity function - returns input unchanged"""
     return t
 
 def default(*args):
+    """
+    Return first non-None argument.
+    If argument is callable, call it to get the value.
+    """
     for arg in args:
         if exists(arg):
             return arg() if callable(arg) else arg
     return None
 
 def pack_one(t, pattern):
+    """Pack a single tensor using einops pattern"""
     return pack([t], pattern)
 
 def unpack_one(t, ps, pattern):
+    """Unpack a single tensor using einops pattern"""
     return unpack(t, ps, pattern)[0]
 
 def l2norm(t):
+    """L2 normalization along last dimension"""
     return F.normalize(t, dim = -1)
 
-# entropy
+# ===================================
+# Entropy Functions
+# ===================================
 
 def log(t, eps = 1e-5):
+    """Safe logarithm with clamping to avoid log(0)"""
     return t.clamp(min = eps).log()
 
 def entropy(prob):
+    """
+    Calculate Shannon entropy: H(p) = -sum(p * log(p))
+    Used for measuring codebook utilization.
+    """
     return (-prob * log(prob)).sum(dim=-1)
 
-# cosine sim linear
+# ===================================
+# Cosine Similarity Linear Layer
+# ===================================
 
 class CosineSimLinear(Module):
+    """
+    Linear layer using cosine similarity instead of standard dot product.
+    Both input and weights are L2-normalized before multiplication.
+
+    This provides better stability for certain quantization methods.
+
+    Args:
+        dim_in: input dimension
+        dim_out: output dimension
+        scale: scaling factor applied after cosine similarity
+    """
     def __init__(
         self,
         dim_in,
@@ -87,13 +118,62 @@ class CosineSimLinear(Module):
         self.weight = nn.Parameter(torch.randn(dim_in, dim_out))
 
     def forward(self, x):
+        """
+        Forward pass with L2-normalized inputs and weights.
+
+        Args:
+            x: input tensor of shape (..., dim_in)
+        Returns:
+            output tensor of shape (..., dim_out)
+        """
         x = F.normalize(x, dim = -1)
         w = F.normalize(self.weight, dim = 0)
         return (x @ w) * self.scale
 
-# class
+# ===================================
+# Lookup-Free Quantization (LFQ)
+# ===================================
 
 class LFQ(Module):
+    """
+    Lookup-Free Quantization (LFQ) from https://arxiv.org/abs/2310.05737
+
+    LFQ is a simpler alternative to traditional VQ that doesn't require a learned codebook.
+    Instead, it quantizes each dimension to {-codebook_scale, +codebook_scale} directly.
+    The codebook is implicitly defined as all possible binary combinations.
+
+    Key Advantages:
+    - No need to maintain and update a codebook
+    - No dead code problem
+    - Simpler and more efficient
+    - Codebook size = 2^(codebook_dim)
+
+    The method uses an entropy-based auxiliary loss to encourage:
+    1. Low per-sample entropy (confident predictions)
+    2. High batch entropy (uniform codebook utilization)
+
+    Args:
+        dim: input/output feature dimension
+        codebook_size: size of implicit codebook (must be power of 2)
+        entropy_loss_weight: weight for entropy auxiliary loss
+        commitment_loss_weight: weight for commitment loss (optional)
+        diversity_gamma: weight for diversity term in entropy loss
+        straight_through_activation: activation applied before straight-through
+        num_codebooks: number of codebooks for product quantization
+        keep_num_codebooks_dim: whether to keep codebook dimension in output
+        codebook_scale: scale of quantized values (values are ±codebook_scale)
+        frac_per_sample_entropy: fraction of samples to use for entropy (memory saving)
+        has_projections: whether to use input/output projections
+        projection_has_bias: whether projections have bias
+        soft_clamp_input_value: soft clamp inputs to this range
+        cosine_sim_project_in: use cosine similarity for input projection
+        cosine_sim_project_in_scale: scale for cosine sim projection
+        channel_first: whether input is channel-first (for images/videos)
+        experimental_softplus_entropy_loss: use softplus to make entropy loss positive
+        entropy_loss_offset: offset before softplus in entropy loss
+        spherical: use Binary Spherical Quantization (BSQ) variant
+        force_quantization_f32: force quantization step to float32 precision
+    """
     def __init__(
         self,
         *,

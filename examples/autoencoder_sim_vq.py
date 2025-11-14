@@ -1,3 +1,10 @@
+"""
+Example: Autoencoder using SimVQ (Simplified Vector Quantization).
+
+Demonstrates SimVQ-based autoencoder on FashionMNIST dataset, using simplified vector quantization
+with optional rotation trick for improved performance.
+"""
+
 # FashionMnist VQ experiment with various settings.
 # From https://github.com/minyoungg/vqtorch/blob/main/examples/autoencoder.py
 

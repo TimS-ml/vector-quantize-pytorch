@@ -1,3 +1,6 @@
+"""
+Tests for README examples - Validates that code examples in README work correctly.
+"""
 import torch
 import pytest
 
